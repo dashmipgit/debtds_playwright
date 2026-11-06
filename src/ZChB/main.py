@@ -1,4 +1,4 @@
-from patchright.async_api import Browser as PlaywrightBrowser, Page
+from patchright.async_api import Page
 from loguru import logger
 import json
 import os
@@ -20,6 +20,7 @@ from .court_debts import extract_defendant_in_progress
 from ..utils import process_inn
 from ..browser import Browser
 
+
 async def close_modal(page: Page):
     """
     Closes the currently active modal by forcing a JavaScript click on its
@@ -37,15 +38,10 @@ async def close_modal(page: Page):
 
         if await close_button.count() > 0:
             logger.info("Modal close button found. Forcing JavaScript click to close modal.")
-            
-            # --- FIX: Go directly to the reliable JS click ---
             await close_button.first.evaluate("el => el.click()")
-
-            # After the click, verify the modal is hidden.
             await modal_container.wait_for(state="hidden", timeout=5000)
             logger.info("Modal has been successfully closed.")
         else:
-            # Fallback if the close button itself is not found.
             logger.warning("Modal close button not found, falling back to pressing 'Escape'.")
             await page.keyboard.press("Escape")
             await modal_container.wait_for(state="hidden", timeout=5000)
@@ -55,21 +51,21 @@ async def close_modal(page: Page):
         await page.keyboard.press("Escape")
 
 
-async def run_test(browser: PlaywrightBrowser, inn: str) -> dict:
+async def run_test(browser: Browser, inn: str) -> dict:
     """
     Tests the CEO and Beneficiary extraction flow on zachestnyibiznes.ru.
 
     Args:
-        browser: The Playwright browser instance from the Browser wrapper.
+        browser: Browser wrapper instance.
         inn: The company's INN.
 
     Returns:
-        A dictionary containing the extracted CEO and beneficiary data.
+        A dictionary containing the extracted data.
     """
     inn = process_inn(inn)
     logger.info(f"Starting test run for INN: {inn}")
 
-    page = await browser.new_page()
+    page = await browser.context.new_page()
     logger.debug("New page created.")
 
     results = {
@@ -83,10 +79,13 @@ async def run_test(browser: PlaywrightBrowser, inn: str) -> dict:
             return {}
 
         logger.info(f"Navigating to search page for INN: {inn}")
-        await page.goto(f"https://zachestnyibiznes.ru/search?query={inn}", wait_until='domcontentloaded')
+        await page.goto(
+            f"https://zachestnyibiznes.ru/search?query={inn}",
+            wait_until="domcontentloaded"
+        )
 
-        company_links_locator = page.locator(f'a[href*="/company/ul/"]:visible')
-        
+        company_links_locator = page.locator('a[href*="/company/ul/"]:visible')
+
         if await company_links_locator.count() == 0:
             logger.warning("No visible company link found on the search results page.")
             return {"message": "Не найдено данных на ЗЧБ. Нет такой компании."}
@@ -107,7 +106,7 @@ async def run_test(browser: PlaywrightBrowser, inn: str) -> dict:
             results["founders"] = await extract_founders(page)
             results["founders"]["formatted"] = format_founders_data(results["founders"])
             await close_modal(page)
-            logger.info("founders modal processed and closed.")
+            logger.info("Founders modal processed and closed.")
         else:
             logger.warning("Could not open or find the founders modal.")
 
@@ -119,7 +118,6 @@ async def run_test(browser: PlaywrightBrowser, inn: str) -> dict:
             logger.warning("Could not open or find the beneficiaries modal.")
 
         results["employees_by_year"] = await extract_employees_by_year(page)
-        
         results["defendant_in_progress"] = await extract_defendant_in_progress(page)
 
         return results
@@ -127,36 +125,46 @@ async def run_test(browser: PlaywrightBrowser, inn: str) -> dict:
     except Exception as e:
         logger.exception(f"An error occurred during the test run for INN {inn}: {e}")
         os.makedirs("data/screenshots", exist_ok=True)
-        await page.screenshot(path=f"data/screenshots/error_{inn}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
+        await page.screenshot(
+            path=f"data/screenshots/error_{inn}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+        )
         return {"error": str(e)}
-    
+
     finally:
         await page.close()
         logger.debug("Page closed.")
 
 
 async def main():
-    test_inn = "3123109532"
-    
+    test_inn = "5047276074"
+
     log_file = f"data/logs/test_runs_{datetime.datetime.now().strftime('%Y-%m-%d')}.log"
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
     logger.add(log_file, rotation="1 day", level="INFO")
 
     logger.info(f"--- Starting new test session for INN: {test_inn} ---")
-    
+
+    browser_manager = Browser(headless=True, datadir="datadir")
+
     try:
-        browser_manager = Browser(headless=True, datadir="datadir")
+        await browser_manager.launch()
         final_data = await run_test(browser_manager, test_inn)
+
         output_filename = f"data/output/{test_inn}_test_data.json"
         os.makedirs(os.path.dirname(output_filename), exist_ok=True)
         with open(output_filename, "w", encoding="utf-8") as f:
             json.dump(final_data, f, ensure_ascii=False, indent=4)
+
         logger.success(f"Test run complete. Data saved to {output_filename}")
         print(json.dumps(final_data, ensure_ascii=False, indent=4))
 
     except Exception as e:
         logger.exception(f"A critical error occurred in the main execution block: {e}")
         raise
+
+    finally:
+        await browser_manager.close()
+
 
 if __name__ == "__main__":
     asyncio.run(main())

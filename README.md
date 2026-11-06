@@ -9,10 +9,14 @@ A Python-based web scraping and data extraction tool for Russian business regist
 - **Bankruptcy Lots**: Parsing and enrichment from tbankrot.ru with AI-powered debtor analysis
 - **RDL Checks**: CEO and founder disqualification status from nalog.ru
 - **Extended Info**: CEOs, beneficiaries, employees, court debts from zachestnyibiznes.ru
+- **Batch ZChB Processing**: Excel-based extraction of CEOs, founders, and beneficiaries with JSON/Excel output
+- **Resumable Batch Runs**: Deduplication by INN, cached results, modal-content stabilization, and progress saving after each company
+- **Human-like Navigation**: Randomized scrolling and configurable pauses between ZChB actions
 - **Bankruptcy Status**: Individual checks via API
 - **PDF Extraction**: Text extraction from PDF URLs
 - **Debt Verification Pipeline**: Multi-stage analysis (structural risks, financial health, legal verification) for bankruptcy debt assessment via debt_verifier module
 - **Proxy Rotation**: Support for rotating proxies via proxies.txt file for scraping reliability
+- **Safe Browser Lifecycle**: Persistent browser context with guarded page/context shutdown and proxy switching
 
 ## Quick Start
 
@@ -143,11 +147,17 @@ curl "http://localhost:8000/company_extended/6312126585"
 ├── .env.example           # Environment variables template
 ├── proxies.txt            # Proxy list for rotation (one per line)
 ├── src/
-│   ├── browser.py         # Playwright wrapper with captcha handling
+│   ├── browser.py         # Persistent browser context, safe shutdown, and proxy retry logic
 │   ├── proxy_manager.py   # Proxy rotation and management
 │   ├── listorg/           # Company data scraping
 │   ├── tbankrot/          # Bankruptcy lot parsing & AI enrichment
 │   ├── ZChB/              # Extended company data extraction
+│   │   ├── flows.py                   # ZChB modal navigation, extraction, and human-like pauses
+│   │   ├── flows2.py                  # Alternative/experimental extraction flow
+│   │   ├── main.py                    # Single-INN development run
+│   │   ├── main_enhanced.py           # Basic Excel batch processor
+│   │   ├── main_enhanced_waits.py     # Resumable batch processor with stable waits and safe saves
+│   │   └── not_banned.py              # Excel filter for debtor/creditor rejection columns
 │   └── debt_verifier/     # Multi-stage debt verification pipeline
 │       ├── all_stages.py              # Stage 0: Basic data validation
 │       ├── stage_3_case_analysis.py   # Stage 3: Legal verification scoring
@@ -171,8 +181,69 @@ uv run src/listorg/main.py
 uv run src/tbankrot/main.py
 
 # ZChB extended extraction
-uv run src/ZChB/main.py
+uv run python -m src.ZChB.main
 ```
+
+## Batch ZChB Processing
+
+The project includes two standalone Excel batch processors. Their input path,
+INN column, output name, browser mode, and browser data directory are configured
+as constants near the top of each script.
+
+### Basic batch processor
+
+`src/ZChB/main_enhanced.py`:
+
+- logs in once and reuses the persistent browser session;
+- reads INNs from an Excel column;
+- extracts CEO history, founder history, and beneficiaries;
+- writes the extracted data into a new Excel column;
+- saves the complete result set as JSON;
+- captures a screenshot when processing an INN fails.
+
+```bash
+uv run python -m src.ZChB.main_enhanced
+```
+
+### Resumable batch processor
+
+`src/ZChB/main_enhanced_waits.py` is intended for longer runs. In addition to
+the basic workflow, it:
+
+- normalizes and deduplicates INNs while preserving their original order;
+- waits for asynchronously loaded modal content to stabilize before extraction;
+- loads previously saved JSON results and skips already processed INNs;
+- saves progress every `SAVE_EVERY_N` unique INNs (currently `1`);
+- writes JSON and Excel through temporary files before replacing the outputs;
+- performs a final save when the run finishes or is interrupted;
+- safely closes pages and the persistent browser context.
+
+```bash
+uv run python -m src.ZChB.main_enhanced_waits
+```
+
+Batch outputs are written to `data/output/`, logs to `data/logs/`, and failure
+screenshots to `data/screenshots/`.
+
+## Filtering Rejected Excel Rows
+
+`src/ZChB/not_banned.py` removes rows where either `Брак по должнику` or
+`Брак по кредитору` is filled. It saves a new workbook with `_not_banned`
+appended to the original filename.
+
+Set `INPUT_FILE` at the top of the script, then run:
+
+```bash
+uv run python -m src.ZChB.not_banned
+```
+
+## Recent ZChB Changes
+
+- Added configurable randomized pauses, pre-click delays, post-open delays, and varied scrolling in `flows.py`.
+- Updated `main.py` to use the shared persistent `Browser` context and to close it reliably.
+- Hardened page, context, Playwright, and proxy-switch cleanup in `browser.py` so cleanup failures are logged without hiding the main operation.
+- Added basic and resumable Excel batch-processing workflows for CEO, founder, and beneficiary extraction.
+- Added an Excel cleanup utility for debtor/creditor rejection markers.
 
 ## Development
 

@@ -19,12 +19,12 @@ class Browser:
     def __init__(self, headless: bool = True, datadir: str | None = None):
         self._headless = headless
         self._datadir = datadir
-        self._playwright_context_manager = None  # type: object | None
+        self._playwright_context_manager = None
         self._playwright: Playwright | None = None
         self._browser: PlaywrightBrowser | None = None
         self.default_context: BrowserContext | None = None
         self.proxy_manager = ProxyManager.from_file("proxies.txt")
-        self._using_proxy = False  # Track if we're currently using proxy
+        self._using_proxy = False
 
     @property
     def context(self) -> BrowserContext | None:
@@ -68,7 +68,6 @@ class Browser:
             await page.goto(url, **kwargs)
             return page
         except (TimeoutError, Error) as e:
-            # Check if it's a timeout or connection error
             error_msg = str(e).lower()
             is_timeout_error = any(
                 keyword in error_msg
@@ -82,33 +81,33 @@ class Browser:
             )
 
             if not is_timeout_error:
-                # Not a timeout/connection error, close page and re-raise
                 if page:
-                    await page.close()
+                    try:
+                        await page.close()
+                    except Exception as close_error:
+                        logger.warning(f"Failed to close failed page: {close_error}")
                 raise
 
             logger.warning(
                 f"Connection/timeout error for URL: {url}. Switching to proxy..."
             )
 
-            # Close the failed page
             if page:
-                await page.close()
+                try:
+                    await page.close()
+                except Exception as close_error:
+                    logger.warning(f"Failed to close failed page: {close_error}")
                 page = None
 
-            # Try rotating through proxies until one works
-            max_proxy_attempts = 5  # Limit proxy rotation attempts
+            max_proxy_attempts = 5
             for attempt in range(max_proxy_attempts):
-                # Get new proxy
                 new_proxy = self.proxy_manager.get_next_proxy()
                 if not new_proxy:
                     logger.error("No proxies available to retry.")
                     raise
 
-                # Switch to proxy mode by recreating persistent context with proxy
                 await self._switch_to_proxy(new_proxy)
 
-                # Retry with the new proxied persistent context
                 try:
                     page = await self.default_context.new_page()
                     await page.goto(url, **kwargs)
@@ -117,12 +116,13 @@ class Browser:
                     )
                     return page
                 except (TimeoutError, Error) as proxy_error:
-                    # Clean up page
                     if page:
-                        await page.close()
+                        try:
+                            await page.close()
+                        except Exception as close_error:
+                            logger.warning(f"Failed to close failed proxy page: {close_error}")
                         page = None
 
-                    # Check if it's still a timeout error
                     proxy_error_msg = str(proxy_error).lower()
                     is_proxy_timeout = any(
                         keyword in proxy_error_msg
@@ -136,7 +136,6 @@ class Browser:
                     )
 
                     if not is_proxy_timeout:
-                        # Not a timeout error, give up
                         raise proxy_error
 
                     if attempt < max_proxy_attempts - 1:
@@ -157,12 +156,14 @@ class Browser:
         else:
             logger.info("Switching to proxy mode for all subsequent requests...")
 
-        # Close the existing persistent context
         if self.default_context:
-            await self.default_context.close()
-            self.default_context = None
+            try:
+                await self.default_context.close()
+            except Exception as e:
+                logger.warning(f"Failed to close old context before proxy switch: {e}")
+            finally:
+                self.default_context = None
 
-        # Recreate persistent context with the SAME datadir but WITH proxy
         logger.info(
             f"Launching persistent context with proxy: {proxy_config['server']}"
         )
@@ -171,7 +172,7 @@ class Browser:
                 user_data_dir=self._datadir,
                 headless=self._headless,
                 channel="chrome",
-                proxy=proxy_config,  # Add proxy configuration
+                proxy=proxy_config,
             )
         )
 
@@ -181,20 +182,22 @@ class Browser:
         )
 
     async def close(self):
-        """Close the persistent context and stop Playwright."""
-        # Close the persistent context
+        """Close the persistent context and stop Playwright safely."""
         if self.default_context:
             try:
                 await self.default_context.close()
                 logger.info("Persistent browser context closed.")
+            except Exception as e:
+                logger.warning(f"Failed to close persistent browser context: {e}")
             finally:
                 self.default_context = None
 
-        # Stop Playwright
         if self._playwright:
             try:
                 await self._playwright.stop()
                 logger.info("Playwright driver stopped.")
+            except Exception as e:
+                logger.warning(f"Failed to stop Playwright driver: {e}")
             finally:
                 self._playwright = None
 
